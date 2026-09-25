@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterAgentThought": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/bin/urpeverse-status.mjs\" hook --fuente cursor"
+      }
+    ],
+    "afterFileEdit": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/bin/urpeverse-status.mjs\" hook --fuente cursor"
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/bin/urpeverse-status.mjs\" hook --fuente cursor"
+      }
+    ],
+    "afterMCPExecution": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/bin/urpeverse-status.mjs\" hook --fuente cursor"
+      }
+    ],
+    "stop": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/bin/urpeverse-status.mjs\" hook --fuente cursor"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": "node \"${CURSOR_PLUGIN_ROOT}/bin/urpeverse-status.mjs\" hook --fuente cursor"
+      }
+    ]
+  }
+}

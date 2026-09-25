@@ -1,0 +1,26 @@
+{
+  "name": "urpeverse-estado",
+  "version": "0.2.0",
+  "description": "Tu avatar de Urpeverse muestra si Codex está trabajando, esperando tu aprobación o terminó. Solo envía el estado, el nombre del repo y la rama.",
+  "author": {
+    "name": "Urpe AI Lab",
+    "url": "https://app.urpeverse.com"
+  },
+  "homepage": "https://github.com/Urpeailab/urpeverse-integraciones",
+  "repository": "https://github.com/Urpeailab/urpeverse-integraciones",
+  "license": "MIT",
+  "keywords": ["urpeverse", "status", "presence", "avatar"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Urpeverse",
+    "shortDescription": "Tu avatar muestra lo que hace Codex",
+    "longDescription": "Mientras trabajas con Codex, tu avatar en Urpeverse muestra si el agente está trabajando, si te necesita para aprobar algo o si terminó. Nunca envía tu código, tus prompts ni las respuestas: solo el estado, el nombre del repo y la rama.",
+    "developerName": "Urpe AI Lab",
+    "category": "Productivity",
+    "websiteURL": "https://app.urpeverse.com",
+    "defaultPrompt": ["Conecta mi cuenta de Urpeverse"],
+    "brandColor": "#1E86E5",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png"
+  }
+}

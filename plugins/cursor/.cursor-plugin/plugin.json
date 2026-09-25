@@ -1,0 +1,17 @@
+{
+  "name": "urpeverse-estado",
+  "displayName": "Urpeverse — estado del agente",
+  "version": "0.2.0",
+  "description": "Tu avatar de Urpeverse muestra si el agente de Cursor está trabajando o terminó. Solo envía el estado, el nombre del repo y la rama.",
+  "author": {
+    "name": "Urpe AI Lab"
+  },
+  "homepage": "https://github.com/Urpeailab/urpeverse-integraciones",
+  "repository": "https://github.com/Urpeailab/urpeverse-integraciones",
+  "license": "MIT",
+  "logo": "assets/icon.png",
+  "keywords": ["urpeverse", "status", "presence", "avatar"],
+  "category": "developer-tools",
+  "skills": "./skills/",
+  "hooks": "./hooks/hooks.json"
+}

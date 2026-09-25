@@ -1,0 +1,16 @@
+{
+  "name": "urpeverse",
+  "owner": {
+    "name": "Urpe AI Lab"
+  },
+  "metadata": {
+    "description": "Integraciones de Urpeverse: tu avatar muestra lo que hace tu agente de código."
+  },
+  "plugins": [
+    {
+      "name": "urpeverse-estado",
+      "source": "plugins/cursor",
+      "description": "Tu avatar de Urpeverse muestra lo que hace el agente de Cursor: trabajando o terminó."
+    }
+  ]
+}

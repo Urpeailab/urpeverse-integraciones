@@ -1,0 +1,13 @@
+{
+  "name": "urpeverse-estado",
+  "displayName": "Urpeverse — estado del agente",
+  "version": "0.2.0",
+  "description": "Tu avatar de Urpeverse muestra si Claude Code está trabajando, esperando tu aprobación o terminó. Después de instalarlo: /urpeverse-estado:conectar. Solo envía el estado, el nombre del repo y la rama: nunca tu código, tus prompts ni las respuestas.",
+  "author": {
+    "name": "Urpe AI Lab"
+  },
+  "homepage": "https://github.com/Urpeailab/urpeverse-integraciones",
+  "repository": "https://github.com/Urpeailab/urpeverse-integraciones",
+  "license": "MIT",
+  "keywords": ["urpeverse", "status", "presence", "avatar"]
+}
