@@ -2,7 +2,7 @@
 name: conectar
 description: Conecta Claude Code con la cuenta de Urpeverse de la persona para que su avatar muestre lo que hace el agente. Úsalo solo cuando la persona pida conectar, vincular o configurar Urpeverse.
 argument-hint: "[--forzar]"
-allowed-tools: Bash(node:*)
+allowed-tools: Bash(node "${CLAUDE_PLUGIN_ROOT}/bin/urpeverse-status.mjs" conectar *)
 ---
 
 # Conectar Urpeverse
