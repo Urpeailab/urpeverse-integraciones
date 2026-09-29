@@ -1,10 +1,34 @@
 #!/usr/bin/env node
-import { mkdirSync, rmSync, writeFileSync, chmodSync, readFileSync, copyFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync, chmodSync, readFileSync, readdirSync, statSync, copyFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+const TTL_ACTIVIDAD_MS = {
+  trabajando: 10 * 6e4,
+  esperando: 30 * 6e4,
+  terminado: 2 * 6e4,
+  error: 5 * 6e4,
+  codeando: 5 * 6e4
+};
 const TOKEN_PERSONAL_REGEX = /^urpe_ut_[A-Za-z0-9_-]{43}$/;
+const DIA_MS = 24 * 60 * 6e4;
+const VENTANA_RENOVACION_DIAS = 30;
+const HEADER_TOKEN_EXPIRA = "Urpeverse-Token-Expira";
+function leerVencimientoToken(valor) {
+  if (valor === null || valor === void 0 || valor.trim() === "") return null;
+  const ms = Date.parse(valor);
+  return Number.isNaN(ms) ? null : ms;
+}
+function debeRenovarToken(expiraEnMs, ahoraMs) {
+  if (expiraEnMs === null || expiraEnMs <= ahoraMs) return false;
+  return expiraEnMs - ahoraMs < VENTANA_RENOVACION_DIAS * DIA_MS;
+}
+const REINTENTO_RENOVACION_MS = 60 * 6e4;
+function debeIntentarRenovacion(ultimoIntentoMs, ahoraMs) {
+  return ultimoIntentoMs === null || ahoraMs - ultimoIntentoMs >= REINTENTO_RENOVACION_MS;
+}
 const CLIENTES_CONEXION = ["claude_code", "codex", "cursor", "vscode", "windsurf"];
 function esClienteConexion(valor) {
   return CLIENTES_CONEXION.includes(valor);
@@ -69,35 +93,62 @@ function esResultadoFinal(resultado) {
 function siguienteIntervaloS(actualS, resultado) {
   return resultado.tipo === "lento" ? actualS + AUMENTO_SLOW_DOWN_S : actualS;
 }
-const ENDPOINT_ESTADO_DEV = "https://lcryrsdyrzotjqdxcwtp.supabase.co/functions/v1/estado-dev";
-const DETALLE_MAX_LEN = 300;
-async function enviarEventoEstado(endpoint, token, cuerpo, timeoutMs) {
-  try {
-    const respuesta = await fetch(endpoint, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(cuerpo),
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (respuesta.ok) return { status: respuesta.status, detalle: null };
-    return { status: respuesta.status, detalle: await detalleProblema(respuesta) };
-  } catch {
-    return { status: null, detalle: null };
+function interpretarRespuestaRenovacion(status, cuerpo) {
+  if (status === null || status >= 500 || status === 429) return { tipo: "sin_conexion" };
+  if (status === 401) return { tipo: "invalido" };
+  if (!esObjeto$2(cuerpo)) return { tipo: "error" };
+  if (status === 200) {
+    const token = cuerpo.access_token;
+    if (typeof token !== "string" || !TOKEN_PERSONAL_REGEX.test(token)) return { tipo: "error" };
+    const expira = typeof cuerpo.expires_at === "string" ? Date.parse(cuerpo.expires_at) : Number.NaN;
+    return { tipo: "renovado", token, expiraEnMs: Number.isNaN(expira) ? null : expira };
   }
+  if (status === 400 && cuerpo.error === "no_toca") return { tipo: "no_toca" };
+  return { tipo: "error" };
 }
-async function detalleProblema(respuesta) {
+const ENDPOINT_ESTADO_DEV_PRODUCCION = "https://lcryrsdyrzotjqdxcwtp.supabase.co/functions/v1/estado-dev";
+const HOSTS_ESTADO_DEV = [new URL(ENDPOINT_ESTADO_DEV_PRODUCCION).hostname];
+const HOSTS_APP = [new URL(APP_URL_PRODUCCION).hostname];
+const HOSTS_LOCALES = ["localhost", "127.0.0.1", "[::1]"];
+function aUrl(valor) {
   try {
-    const cuerpo = await respuesta.json();
-    const texto = typeof cuerpo.detail === "string" ? cuerpo.detail : typeof cuerpo.title === "string" ? cuerpo.title : null;
-    return texto === null ? null : texto.slice(0, DETALLE_MAX_LEN);
+    const url = new URL(valor.trim());
+    return url.username === "" && url.password === "" ? url : null;
   } catch {
     return null;
   }
 }
+const esLocal = (url) => (url.protocol === "http:" || url.protocol === "https:") && HOSTS_LOCALES.includes(url.hostname);
+function endpointEstadoDevPermitido(valor) {
+  const url = aUrl(valor);
+  if (url === null || !/\/estado-dev\/?$/.test(url.pathname)) return false;
+  return esLocal(url) || url.protocol === "https:" && HOSTS_ESTADO_DEV.includes(url.hostname);
+}
+function appUrlPermitida(valor) {
+  const url = aUrl(valor);
+  if (url === null) return false;
+  return esLocal(url) || url.protocol === "https:" && HOSTS_APP.includes(url.hostname);
+}
+function resolverDestino(candidatos, porDefecto, permitido) {
+  let ignorado = null;
+  for (const candidato of candidatos) {
+    const valor = candidato?.trim() ?? "";
+    if (valor === "") continue;
+    if (permitido(valor)) return { url: valor, ignorado };
+    ignorado ??= valor;
+  }
+  return { url: porDefecto, ignorado };
+}
+const FUENTES_IDE = ["claude_code", "cursor", "codex"];
+const ACTIVIDAD_REPO_MAX_LEN = 100;
+const ACTIVIDAD_RAMA_MAX_LEN = 120;
+const ACTIVIDAD_SESION_ID_MAX_LEN = 128;
 const DIR_URPEVERSE = join(homedir(), ".urpeverse");
 const ARCHIVO_CREDENCIALES = join(DIR_URPEVERSE, "credenciales.json");
 const ARCHIVO_PENDIENTE = join(DIR_URPEVERSE, "conexion-pendiente.json");
+const ARCHIVO_PREFERENCIAS = join(DIR_URPEVERSE, "preferencias.json");
 const DIR_SESIONES = join(DIR_URPEVERSE, "sesiones");
+const VIDA_ARCHIVO_SESION_MS = 24 * 60 * 6e4;
 function leerJson(ruta) {
   try {
     return JSON.parse(readFileSync(ruta, "utf8"));
@@ -118,11 +169,17 @@ function resolverCredenciales(env) {
   const conexion = leerConexion();
   const deEntorno = env.URPEVERSE_TOKEN?.trim() || null;
   const token = deEntorno ?? conexion?.token ?? null;
-  const endpoint = env.URPEVERSE_ENDPOINT?.trim() || conexion?.endpoint || ENDPOINT_ESTADO_DEV;
-  return { token, endpoint, origen: deEntorno !== null ? "entorno" : token !== null ? "archivo" : null, conexion };
+  const destino = resolverDestino([env.URPEVERSE_ENDPOINT, conexion?.endpoint], ENDPOINT_ESTADO_DEV_PRODUCCION, endpointEstadoDevPermitido);
+  return {
+    token,
+    endpoint: destino.url,
+    endpointIgnorado: destino.ignorado,
+    origen: deEntorno !== null ? "entorno" : token !== null ? "archivo" : null,
+    conexion
+  };
 }
 function resolverAppUrl(env, deArgumento) {
-  return deArgumento?.trim() || env.URPEVERSE_APP_URL?.trim() || APP_URL_PRODUCCION;
+  return resolverDestino([deArgumento, env.URPEVERSE_APP_URL], APP_URL_PRODUCCION, appUrlPermitida);
 }
 function guardarConexion(conexion) {
   mkdirSync(DIR_URPEVERSE, { recursive: true });
@@ -149,14 +206,47 @@ function borrarConexionPendiente() {
 function tokenValido(token) {
   return TOKEN_PERSONAL_REGEX.test(token);
 }
-const rutaSesion = (sesionId) => join(DIR_SESIONES, `${sesionId.replace(/:/g, "_")}.json`);
+function leerPausaGlobal() {
+  const v = leerJson(ARCHIVO_PREFERENCIAS);
+  return v?.pausado === true;
+}
+function guardarPausaGlobal(pausado) {
+  mkdirSync(DIR_URPEVERSE, { recursive: true });
+  escribirJson(ARCHIVO_PREFERENCIAS, { pausado });
+}
+const nombreArchivoSesion = (sesionId) => `${sesionId.replace(/:/g, "_")}.json`;
 function leerUltimoEnvio(sesionId) {
-  const v = leerJson(rutaSesion(sesionId));
+  const v = leerJson(join(DIR_SESIONES, nombreArchivoSesion(sesionId)));
   return v !== null && typeof v.tipo === "string" && typeof v.enviadoEnMs === "number" ? v : null;
 }
 function guardarUltimoEnvio(sesionId, envio) {
   mkdirSync(DIR_SESIONES, { recursive: true });
-  escribirJson(rutaSesion(sesionId), envio);
+  escribirJson(join(DIR_SESIONES, nombreArchivoSesion(sesionId)), { ...envio, sesionId });
+}
+function listarSesiones(ahoraMs) {
+  let archivos;
+  try {
+    archivos = readdirSync(DIR_SESIONES);
+  } catch {
+    return [];
+  }
+  const sesiones = [];
+  for (const archivo of archivos) {
+    const ruta = join(DIR_SESIONES, archivo);
+    try {
+      if (ahoraMs - statSync(ruta).mtimeMs > VIDA_ARCHIVO_SESION_MS) {
+        rmSync(ruta, { force: true });
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    const v = leerJson(ruta);
+    if (v === null || typeof v.sesionId !== "string" || typeof v.enviadoEnMs !== "number") continue;
+    if (!FUENTES_IDE.includes(v.fuente)) continue;
+    sesiones.push({ sesionId: v.sesionId, fuente: v.fuente, repo: v.repo ?? null, enviadoEnMs: v.enviadoEnMs });
+  }
+  return sesiones;
 }
 const MARCA_COMANDO = "urpeverse-status";
 const EVENTOS_CURSOR$1 = [
@@ -213,6 +303,10 @@ async function canjearConexion(endpoint, codigoDispositivo, timeoutMs) {
   const { status, json } = await postJson(endpoint, { accion: "canjear", device_code: codigoDispositivo }, timeoutMs);
   return interpretarRespuestaCanje(status, json);
 }
+async function renovarConexion(endpoint, token, timeoutMs) {
+  const { status, json } = await postJson(endpoint, { accion: "renovar" }, timeoutMs, token);
+  return interpretarRespuestaRenovacion(status, json);
+}
 async function revocarConexion(endpoint, token, timeoutMs) {
   const { status } = await postJson(endpoint, { accion: "revocar" }, timeoutMs, token);
   return status === 204;
@@ -253,12 +347,12 @@ function abrirNavegador(url, env = process.env, plataforma = process.platform) {
     return false;
   }
 }
-const TIMEOUT_MS = 8e3;
+const TIMEOUT_MS$1 = 8e3;
 const ESPERA_MAX_MS = 9 * 6e4;
 const MARGEN_REUSO_MS = 6e4;
 const hora = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 async function pedirConexion(op, endpoint) {
-  const r = await iniciarConexion(endpointConectar(endpoint), op.cliente, sistemaDesdePlataforma(process.platform), TIMEOUT_MS);
+  const r = await iniciarConexion(endpointConectar(endpoint), op.cliente, sistemaDesdePlataforma(process.platform), TIMEOUT_MS$1);
   if (r.tipo !== "ok") {
     console.error(
       r.tipo === "limitada" ? "Urpeverse recibió muchas conexiones seguidas. Prueba de nuevo en un minuto." : "No se pudo contactar a Urpeverse. Revisa tu conexión y prueba de nuevo."
@@ -313,7 +407,7 @@ async function esperar(cred) {
   let actual = pendiente;
   const fin = await esperarAutorizacion(
     {
-      canjear: () => canjearConexion(endpoint, pendiente.codigoDispositivo, TIMEOUT_MS),
+      canjear: () => canjearConexion(endpoint, pendiente.codigoDispositivo, TIMEOUT_MS$1),
       esperar: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
       ahora: () => Date.now(),
       alSondear: (_resultado, intervaloS) => {
@@ -355,7 +449,7 @@ async function guardarNuevaConexion(fin, cliente, cred) {
     conectadoEnMs: Date.now(),
     ...cred.conexion?.endpoint ? { endpoint: cred.conexion.endpoint } : {}
   });
-  if (anterior !== null && anterior !== fin.token) await revocarConexion(endpointConectar(cred.endpoint), anterior, TIMEOUT_MS);
+  if (anterior !== null && anterior !== fin.token) await revocarConexion(endpointConectar(cred.endpoint), anterior, TIMEOUT_MS$1);
 }
 async function completarConexionPendiente(endpointEstadoDev, timeoutMs) {
   const pendiente = leerConexionPendiente();
@@ -390,17 +484,30 @@ async function modoDesconectar() {
     console.log("Esta máquina no estaba conectada.");
     return 0;
   }
-  const revocado = await revocarConexion(endpointConectar(cred.endpoint), cred.token, TIMEOUT_MS);
+  const revocado = await revocarConexion(endpointConectar(cred.endpoint), cred.token, TIMEOUT_MS$1);
   borrarConexion();
   console.log(
     revocado ? "✓ Desconectado: el token quedó revocado en Urpeverse y se borró de esta máquina." : "Se borró de esta máquina, pero no se pudo revocar en Urpeverse. Revócalo en Configuración → Integraciones."
   );
   return 0;
 }
-const FUENTES_IDE = ["claude_code", "cursor", "codex"];
-const ACTIVIDAD_REPO_MAX_LEN = 100;
-const ACTIVIDAD_RAMA_MAX_LEN = 120;
-const ACTIVIDAD_SESION_ID_MAX_LEN = 128;
+const CLAVE_GIT_COMPARTIR = "urpeverse.compartir";
+function valorGitEsFalso(valor) {
+  if (valor === null) return false;
+  const v = valor.trim().toLowerCase();
+  return v === "" || v === "false" || v === "no" || v === "off" || v === "0";
+}
+function lecturaPausada(lectura) {
+  return lectura.tipo === "puesta" && valorGitEsFalso(lectura.valor);
+}
+function debeCompartirActividad(preferencia) {
+  if (preferencia.pausaGlobal || preferencia.lecturaRepo.tipo === "sin_respuesta") return false;
+  return !lecturaPausada(preferencia.lecturaRepo);
+}
+const VIGENCIA_MAXIMA_MS = Math.max(...Object.values(TTL_ACTIVIDAD_MS));
+function sesionesACerrar(sesiones, repo, ahoraMs) {
+  return sesiones.filter((s) => ahoraMs - s.enviadoEnMs < VIGENCIA_MAXIMA_MS && (repo === null || s.repo === repo));
+}
 const TRABAJANDO = "trabajando";
 const EVENTOS_ESTILO_CLAUDE = {
   UserPromptSubmit: TRABAJANDO,
@@ -482,6 +589,70 @@ function sanearSesionId(valor) {
 function esObjeto(valor) {
   return typeof valor === "object" && valor !== null && !Array.isArray(valor);
 }
+const TIMEOUT_GIT_MS = 800;
+const ejecutarGit = (directorio, args) => execFileSync("git", ["-C", directorio, ...args], {
+  timeout: TIMEOUT_GIT_MS,
+  stdio: ["ignore", "pipe", "ignore"],
+  encoding: "utf8"
+}).trim();
+function git(directorio, args) {
+  if (directorio === null) return null;
+  try {
+    return ejecutarGit(directorio, args);
+  } catch {
+    return null;
+  }
+}
+const leerRama = (directorio) => git(directorio, ["rev-parse", "--abbrev-ref", "HEAD"]);
+function leerCompartirGit(directorio) {
+  try {
+    return { tipo: "puesta", valor: ejecutarGit(directorio ?? process.cwd(), ["config", "--get", CLAVE_GIT_COMPARTIR]) };
+  } catch (error) {
+    const { status, code } = error;
+    return status === 1 || code === "ENOENT" ? { tipo: "no_puesta" } : { tipo: "sin_respuesta" };
+  }
+}
+const esRepoGit = (directorio) => git(directorio, ["rev-parse", "--is-inside-work-tree"]) === "true";
+function escribirCompartirGit(directorio, valor) {
+  if (valor === null) {
+    git(directorio, ["config", "--local", "--unset", CLAVE_GIT_COMPARTIR]);
+    return git(directorio, ["config", "--local", "--get", CLAVE_GIT_COMPARTIR]) === null;
+  }
+  return git(directorio, ["config", "--local", CLAVE_GIT_COMPARTIR, valor]) !== null;
+}
+const VERSION_CLI = "0.3.0";
+function huellaCli(ruta) {
+  try {
+    return createHash("sha256").update(readFileSync(ruta)).digest("hex");
+  } catch {
+    return "no disponible";
+  }
+}
+function modoDiagnostico(directorio) {
+  const ruta = fileURLToPath(import.meta.url);
+  console.log(`urpeverse-status ${VERSION_CLI} · sha256 ${huellaCli(ruta)}`);
+  console.log(`  ${ruta}`);
+  const { token, endpoint, endpointIgnorado, origen, conexion } = resolverCredenciales(process.env);
+  console.log(`endpoint: ${endpoint}`);
+  if (endpointIgnorado !== null) {
+    console.log(`⚠ se ignoró ${endpointIgnorado}: el token solo sale hacia Urpeverse (https) o hacia esta máquina.`);
+  }
+  if (token === null) console.log("conexión: esta máquina NO está conectada (urpeverse-status conectar)");
+  else {
+    const de = origen === "entorno" ? "URPEVERSE_TOKEN" : "~/.urpeverse/credenciales.json";
+    console.log(`token: ${token.slice(0, 12)}… (${tokenValido(token) ? "formato ok" : "formato inválido"}, de ${de})`);
+    if (conexion?.persona) console.log(`cuenta: ${conexion.persona}${conexion.espacio ? ` en ${conexion.espacio}` : ""}`);
+  }
+  const repo = nombreRepoDesdeDirectorio(directorio);
+  const lectura = leerCompartirGit(directorio);
+  if (leerPausaGlobal()) console.log("pausa: toda la máquina (urpeverse-status reanudar)");
+  else if (lectura.tipo === "sin_respuesta") console.log("pausa: git no contestó al leer urpeverse.compartir; mientras no conteste, no sale nada de acá");
+  else if (lecturaPausada(lectura)) console.log(`pausa: ${repo ?? "este repo"} (git config urpeverse.compartir false)`);
+  else console.log("pausa: ninguna");
+  const pendiente = leerConexionPendiente();
+  if (pendiente !== null) console.log(`esperando autorización: ${pendiente.codigoUsuario} → ${pendiente.url}`);
+  return 0;
+}
 const REENVIO_MISMO_ESTADO_MS = 6e4;
 function debeEnviarEventoIde(ultimo, tipo, ahoraMs) {
   if (ultimo === null || ultimo.tipo !== tipo) return true;
@@ -508,9 +679,32 @@ function construirCuerpoEventoEstado(evento, rama) {
     rama: ramaVisible(rama)
   };
 }
+const DETALLE_MAX_LEN = 300;
+async function enviarEventoEstado(endpoint, token, cuerpo, timeoutMs) {
+  try {
+    const respuesta = await fetch(endpoint, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(cuerpo),
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (respuesta.ok) return { status: respuesta.status, detalle: null, expiraEn: respuesta.headers.get(HEADER_TOKEN_EXPIRA) };
+    return { status: respuesta.status, detalle: await detalleProblema(respuesta) };
+  } catch {
+    return { status: null, detalle: null };
+  }
+}
+async function detalleProblema(respuesta) {
+  try {
+    const cuerpo = await respuesta.json();
+    const texto = typeof cuerpo.detail === "string" ? cuerpo.detail : typeof cuerpo.title === "string" ? cuerpo.title : null;
+    return texto === null ? null : texto.slice(0, DETALLE_MAX_LEN);
+  } catch {
+    return null;
+  }
+}
 const TIMEOUT_POST_MS = 2e3;
 const TIMEOUT_STDIN_MS = 1500;
-const TIMEOUT_GIT_MS = 800;
 async function leerStdin() {
   if (process.stdin.isTTY) return "";
   return new Promise((resolve) => {
@@ -523,18 +717,6 @@ async function leerStdin() {
       resolve(datos);
     });
   });
-}
-function leerRama(directorio) {
-  if (directorio === null) return null;
-  try {
-    return execFileSync("git", ["-C", directorio, "rev-parse", "--abbrev-ref", "HEAD"], {
-      timeout: TIMEOUT_GIT_MS,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8"
-    }).trim();
-  } catch {
-    return null;
-  }
 }
 async function modoHook(fuenteArg, ultimoArg) {
   const fuente = fuenteArg;
@@ -550,14 +732,75 @@ async function modoHook(fuenteArg, ultimoArg) {
   if (evento === null) return;
   const ahora = Date.now();
   if (!debeEnviarEventoIde(leerUltimoEnvio(evento.sesionId), evento.tipo, ahora)) return;
+  const directorio = extraerDirectorioTrabajo(payload);
+  if (!debeCompartirActividad({ pausaGlobal: leerPausaGlobal(), lecturaRepo: leerCompartirGit(directorio) })) return;
   const credenciales = resolverCredenciales(process.env);
   const token = credenciales.token ?? await completarConexionPendiente(credenciales.endpoint, TIMEOUT_POST_MS);
   if (token === null) return;
-  const cuerpo = construirCuerpoEventoEstado(evento, leerRama(extraerDirectorioTrabajo(payload)));
-  const { status } = await enviarEventoEstado(credenciales.endpoint, token, cuerpo, TIMEOUT_POST_MS);
-  if (interpretarRespuestaEstadoDev(status) === "ok") {
-    guardarUltimoEnvio(evento.sesionId, { tipo: evento.tipo, enviadoEnMs: ahora });
+  const cuerpo = construirCuerpoEventoEstado(evento, leerRama(directorio));
+  const respuesta = await enviarEventoEstado(credenciales.endpoint, token, cuerpo, TIMEOUT_POST_MS);
+  if (interpretarRespuestaEstadoDev(respuesta.status) !== "ok") return;
+  guardarUltimoEnvio(evento.sesionId, { tipo: evento.tipo, enviadoEnMs: ahora, fuente: evento.fuente, repo: evento.repo });
+  await renovarSiToca(credenciales, token, respuesta.expiraEn ?? null, ahora);
+}
+async function renovarSiToca(credenciales, token, expiraEn, ahora) {
+  const conexion = credenciales.conexion;
+  if (credenciales.origen !== "archivo" || conexion === null) return;
+  if (!debeRenovarToken(leerVencimientoToken(expiraEn), ahora)) return;
+  if (!debeIntentarRenovacion(conexion.renovacionIntentadaEnMs ?? null, ahora)) return;
+  if (resolverCredenciales(process.env).token !== token) return;
+  guardarConexion({ ...conexion, renovacionIntentadaEnMs: ahora });
+  const r = await renovarConexion(endpointConectar(credenciales.endpoint), token, TIMEOUT_POST_MS);
+  if (r.tipo === "renovado") guardarConexion({ ...conexion, token: r.token, renovacionIntentadaEnMs: ahora });
+}
+const TIMEOUT_MS = 5e3;
+async function cerrarSesiones(repo) {
+  const cred = resolverCredenciales(process.env);
+  if (cred.token === null) return 0;
+  const ahora = Date.now();
+  let cerradas = 0;
+  for (const s of sesionesACerrar(listarSesiones(ahora), repo, ahora)) {
+    const { status } = await enviarEventoEstado(
+      cred.endpoint,
+      cred.token,
+      { fuente: s.fuente, sesionId: s.sesionId, tipo: "fin", repo: null, rama: null },
+      TIMEOUT_MS
+    );
+    if (status !== null && status >= 200 && status < 300) cerradas += 1;
   }
+  return cerradas;
+}
+async function modoPausar(op) {
+  if (op.repo) {
+    const nombre = nombreRepoDesdeDirectorio(op.directorio);
+    if (!esRepoGit(op.directorio) || !escribirCompartirGit(op.directorio, "false")) {
+      console.error("Esta carpeta no es un repo de git: ejecútalo dentro del repo que quieres pausar, o sin --repo para pausar todo.");
+      return 1;
+    }
+    await cerrarSesiones(nombre);
+    console.log(`⏸ Pausado en ${nombre ?? "este repo"}: los hooks no mandan nada desde acá. Para volver: urpeverse-status reanudar --repo`);
+    return 0;
+  }
+  guardarPausaGlobal(true);
+  await cerrarSesiones(null);
+  console.log("⏸ Pausado: los hooks no mandan nada desde esta máquina. Para volver: urpeverse-status reanudar");
+  return 0;
+}
+function modoReanudar(op) {
+  if (op.repo) {
+    if (!esRepoGit(op.directorio) || !escribirCompartirGit(op.directorio, null)) {
+      console.error("Esta carpeta no es un repo de git: ejecútalo dentro del repo que pausaste.");
+      return 1;
+    }
+    console.log(`▶ Reanudado en ${nombreRepoDesdeDirectorio(op.directorio) ?? "este repo"}.`);
+    if (lecturaPausada(leerCompartirGit(op.directorio))) {
+      console.log("  Ojo: sigue pausado por la config global de git. Para quitarla: git config --global --unset urpeverse.compartir");
+    }
+    return 0;
+  }
+  guardarPausaGlobal(false);
+  console.log("▶ Reanudado: tu avatar vuelve a mostrar lo que hace tu agente.");
+  return 0;
 }
 const REPO_PUBLICO = "https://github.com/Urpeailab/urpeverse-integraciones";
 function argumento(nombre) {
@@ -568,12 +811,14 @@ const bandera = (nombre) => process.argv.includes(`--${nombre}`);
 function opcionesConectar(clientePorDefecto) {
   const fuente = argumento("fuente");
   const espera = bandera("sin-esperar") ? "sin_esperar" : bandera("esperar") ? "solo_esperar" : "completo";
+  const app = resolverAppUrl(process.env, argumento("app-url"));
+  if (app.ignorado !== null) console.error(`Se ignoró ${app.ignorado}: «Conectar» solo abre la web de Urpeverse (https) o esta máquina.`);
   return {
     cliente: esClienteConexion(fuente) ? fuente : clientePorDefecto,
     espera,
     abrir: !bandera("no-abrir"),
     forzar: bandera("forzar"),
-    appUrl: resolverAppUrl(process.env, argumento("app-url"))
+    appUrl: app.url
   };
 }
 function modoConfigurar() {
@@ -583,6 +828,10 @@ function modoConfigurar() {
     return 1;
   }
   const endpoint = argumento("endpoint");
+  if (endpoint !== void 0 && !endpointEstadoDevPermitido(endpoint)) {
+    console.error("Endpoint inválido: tiene que ser la Edge estado-dev de Urpeverse (https) o una de esta máquina.");
+    return 1;
+  }
   const ruta = guardarConexion({ token, cliente: null, conectadoEnMs: Date.now(), ...endpoint ? { endpoint } : {} });
   console.log(`Guardado en ${ruta} (solo lectura para tu usuario).`);
   return 0;
@@ -604,19 +853,6 @@ async function modoInstalar(herramienta) {
   console.log("");
   return modoConectar(opcionesConectar("cursor"));
 }
-function modoDiagnostico() {
-  const { token, endpoint, origen, conexion } = resolverCredenciales(process.env);
-  console.log(`endpoint: ${endpoint}`);
-  if (token === null) console.log("conexión: esta máquina NO está conectada (urpeverse-status conectar)");
-  else {
-    const de = origen === "entorno" ? "URPEVERSE_TOKEN" : "~/.urpeverse/credenciales.json";
-    console.log(`token: ${token.slice(0, 12)}… (${tokenValido(token) ? "formato ok" : "formato inválido"}, de ${de})`);
-    if (conexion?.persona) console.log(`cuenta: ${conexion.persona}${conexion.espacio ? ` en ${conexion.espacio}` : ""}`);
-  }
-  const pendiente = leerConexionPendiente();
-  if (pendiente !== null) console.log(`esperando autorización: ${pendiente.codigoUsuario} → ${pendiente.url}`);
-  return 0;
-}
 async function main() {
   const [comando] = process.argv.slice(2);
   if (comando === "hook") {
@@ -626,11 +862,14 @@ async function main() {
     }
     process.exit(0);
   }
+  const pausa = { repo: bandera("repo"), directorio: process.cwd() };
   if (comando === "conectar") process.exitCode = await modoConectar(opcionesConectar("claude_code"));
   else if (comando === "desconectar") process.exitCode = await modoDesconectar();
-  else if (comando === "diagnostico") process.exitCode = modoDiagnostico();
+  else if (comando === "pausar") process.exitCode = await modoPausar(pausa);
+  else if (comando === "reanudar") process.exitCode = modoReanudar(pausa);
+  else if (comando === "diagnostico") process.exitCode = modoDiagnostico(process.cwd());
   else if (comando === "instalar") process.exitCode = await modoInstalar(process.argv[3]);
   else if (comando === "configurar") process.exitCode = modoConfigurar();
-  else console.log(`Uso: urpeverse-status conectar|desconectar|diagnostico|instalar cursor — ver ${REPO_PUBLICO}`);
+  else console.log(`Uso: urpeverse-status conectar|desconectar|pausar|reanudar|diagnostico|instalar cursor — ver ${REPO_PUBLICO}`);
 }
 void main();

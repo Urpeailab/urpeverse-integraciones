@@ -1,6 +1,6 @@
 {
   "name": "urpeverse-estado",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Tu avatar de Urpeverse muestra si Codex está trabajando, esperando tu aprobación o terminó. Solo envía el estado, el nombre del repo y la rama.",
   "author": {
     "name": "Urpe AI Lab",
