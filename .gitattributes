@@ -1,0 +1,10 @@
+# Todo el repo en LF, también en Windows (URP-54). `urpeverse-status
+# diagnostico` muestra el sha256 del CLI que corre en cada evento, y cada
+# release publica el suyo para compararlo. Git para Windows trae
+# `core.autocrlf=true`: sin esta regla, al clonar deja el CLI en CRLF y el
+# sha256 no coincide nunca con el del release. Con `eol=lf`, git no mira
+# `core.autocrlf`; al hacer checkout usa el `.gitattributes` del commit que
+# baja, así que también vale para quien actualiza. Los binarios (el ícono) se
+# detectan solos y no se tocan.
+#   https://git-scm.com/docs/gitattributes
+* text=auto eol=lf

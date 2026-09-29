@@ -10,7 +10,7 @@ Mientras trabajas con **Claude Code**, **Codex** o **Cursor**, tu avatar en [Urp
 | ⚠️ error | el turno se cortó por un error de la API |
 | ⌨️ codeando | estás usando VS Code, Cursor o Windsurf (extensión) |
 
-**Qué sale de tu máquina:** solo el estado, el nombre de la carpeta del repo y la rama. **Nunca** tu código, tus prompts, las respuestas del agente, nombres de archivos, rutas completas ni tu email.
+**Qué sale de tu máquina:** solo el estado, el nombre de la carpeta del repo y la rama. **Nunca** tu código, tus prompts, las respuestas del agente, nombres de archivos, rutas completas ni tu email. Un repo se puede pausar (ver [Pausar](#pausar)).
 
 **Si Urpeverse está caído o no hay red,** tu agente sigue igual: los hooks nunca bloquean nada.
 
@@ -69,6 +69,17 @@ Cada conexión aparece en **Urpeverse → Configuración → Integraciones** con
 
 Una conexión por máquina alcanza para Claude Code, Codex y Cursor: comparten `~/.urpeverse/credenciales.json`, que solo tu usuario puede leer. La extensión guarda la suya en el llavero del editor.
 
+Cada vez que autorizas una conexión nueva te llega un correo de aviso: si no fuiste tú, revócala desde Integraciones. Una conexión dura 90 días y, mientras la usas, se renueva sola antes de vencer. Si la dejas de usar, vence y hay que volver a conectar.
+
+## Pausar
+
+- **Un repo** (por ejemplo, el de un cliente): `git config urpeverse.compartir false` dentro del repo. Lo respetan los hooks de los agentes y la extensión de editor. Se quita con `git config --unset urpeverse.compartir`.
+- **Todos tus repos:** `git config --global urpeverse.compartir false`.
+- **Los agentes de toda la máquina:** `node <carpeta del plugin>/bin/urpeverse-status.mjs pausar` (y `reanudar`). Con `--repo`, solo el repo donde lo corres. Así, lo que se estaba viendo sobre tu avatar se va enseguida; con `git config` a mano, vence solo en unos minutos.
+- **El editor:** **Urpeverse: Pausar o reanudar** en la paleta de comandos.
+
+Si git no contesta al leer la pausa, no se manda nada: en la duda, no se comparte. Por lo mismo, la extensión solo manda el nombre de un repo cuando pudo leer su pausa con la extensión de git del editor. En Restricted Mode, o con git deshabilitado, «⌨️ codeando» sale sin nombre.
+
 ## Para equipos
 
 - **Repo del equipo con Claude Code:** suma esto al `.claude/settings.json` del repo. Claude Code se lo ofrece a cada persona la primera vez que confía en la carpeta.
@@ -87,7 +98,13 @@ Una conexión por máquina alcanza para Claude Code, Codex y Cursor: comparten `
 
 ## Diagnóstico
 
-`node <carpeta del plugin>/bin/urpeverse-status.mjs diagnostico` dice con qué cuenta está conectada la máquina, y `desconectar` revoca el token y lo borra de la máquina. También puedes revocarlo desde Integraciones.
+`node <carpeta del plugin>/bin/urpeverse-status.mjs diagnostico` dice con qué cuenta está conectada la máquina, a dónde manda los eventos y si hay algo pausado, y `desconectar` revoca el token y lo borra de la máquina. También puedes revocarlo desde Integraciones.
+
+`diagnostico` muestra además la versión y el sha256 del CLI que corre en cada evento de tu agente. Cada [release](https://github.com/Urpeailab/urpeverse-integraciones/releases) publica el sha256 de esa versión: si coinciden, tienes exactamente lo publicado. Los tags `v*` no se pueden mover ni borrar.
+
+## Seguridad
+
+Para reportar una vulnerabilidad, usa **Security → Report a vulnerability** en este repo: el reporte es privado. No abras un issue público.
 
 ## Licencia
 
